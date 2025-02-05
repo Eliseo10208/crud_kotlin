@@ -85,7 +85,9 @@ fun ProductScreen() {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(title = { Text("Gestión de Productos") })
+            CenterAlignedTopAppBar(
+                title = { Text("Gestión de Productos") }
+            )
         }
     ) { padding ->
         Column(
