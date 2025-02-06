@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "579212190655",
+    "project_id": "pictures-17d7e",
+    "storage_bucket": "pictures-17d7e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:579212190655:android:ad9b7d6c1bc5499d7e370a",
+        "android_client_info": {
+          "package_name": "com.example.crud"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA78-dCSldK7CNRoSV4WqM5x4sVJ-KkueI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

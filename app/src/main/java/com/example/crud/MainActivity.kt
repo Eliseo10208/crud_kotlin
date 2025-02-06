@@ -1,9 +1,15 @@
 package com.example.crud
 
+import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,18 +26,16 @@ import com.example.crud.ui.theme.CrudTheme
 import retrofit2.*
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.*
-import kotlin.random.Random
+import java.io.IOException
 
-// Modelo de datos
-data class Producto(val id: Int, var nombre: String, var precio: Double)
+data class Producto(val id: Int, var nombre: String, var precio: Double, var imagenUrl: String? = null)
 
-// Retrofit API
 interface ApiService {
-    @GET("api/productos")
-    fun getProductos(): Call<List<Producto>>
-
     @POST("api/productos")
     fun createProducto(@Body producto: Producto): Call<Producto>
+
+    @GET("api/productos")
+    fun getProductos(): Call<List<Producto>>
 
     @PUT("api/productos/{id}")
     fun updateProducto(@Path("id") id: Int, @Body producto: Producto): Call<Producto>
@@ -53,31 +57,76 @@ object RetrofitInstance {
 }
 
 class MainActivity : ComponentActivity() {
+    private var imageUri: Uri? = null
+
+    private val takePhotoLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success: Boolean ->
+        if (success) {
+            imageUri?.let {
+                Toast.makeText(this, "Foto capturada y almacenada localmente", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(this, "No se pudo capturar la foto", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        imageUri = createImageUri(this, "producto_${System.currentTimeMillis()}.jpg")
+
         setContent {
             CrudTheme {
-                ProductScreen()
+                ProductScreen(
+                    onTakePhoto = {
+                        imageUri?.let { takePhotoLauncher.launch(it) }
+                    },
+                    imagePath = imageUri?.path,
+                    context = this
+                )
             }
+        }
+    }
+
+    private fun createImageUri(context: Context, fileName: String): Uri? {
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Productos")
+        }
+
+        return try {
+            context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+        } catch (e: IOException) {
+            Log.e("ImageCapture", "Error al crear el URI de la imagen", e)
+            null
         }
     }
 }
 
 @Composable
-fun ProductScreen() {
+fun ProductScreen(onTakePhoto: () -> Unit, imagePath: String?, context: Context) {
     var productos by remember { mutableStateOf<List<Producto>>(emptyList()) }
     var nombreProducto by remember { mutableStateOf(TextFieldValue("")) }
     var precioProducto by remember { mutableStateOf(TextFieldValue("")) }
+    var editingProduct by remember { mutableStateOf<Producto?>(null) }
 
-    // Obtener productos de la API
+    // Cargar productos al inicio
     LaunchedEffect(Unit) {
-        fetchProductos { productos = it }
+        RetrofitInstance.api.getProductos().enqueue(object : Callback<List<Producto>> {
+            override fun onResponse(call: Call<List<Producto>>, response: Response<List<Producto>>) {
+                if (response.isSuccessful) {
+                    response.body()?.let { productos = it }
+                }
+            }
+            override fun onFailure(call: Call<List<Producto>>, t: Throwable) {
+                Toast.makeText(context, "Error al cargar productos: ${t.message}", Toast.LENGTH_SHORT).show()
+            }
+        })
     }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
-            CustomTopBar(title = "Gestión de Productos")
+            CustomTopBar(title = if (editingProduct == null) "Gestión de Productos" else "Editando Producto")
         }
     ) { padding ->
         Column(
@@ -88,7 +137,6 @@ fun ProductScreen() {
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Formulario para agregar producto
             TextField(
                 value = nombreProducto,
                 onValueChange = { nombreProducto = it },
@@ -101,152 +149,172 @@ fun ProductScreen() {
                 label = { Text("Precio del Producto") },
                 modifier = Modifier.fillMaxWidth()
             )
-            Button(
-                onClick = {
-                    val nuevoProducto = Producto(
-                        id = Random.nextInt(1000),
-                        nombre = nombreProducto.text,
-                        precio = precioProducto.text.toDoubleOrNull() ?: 0.0
-                    )
-                    createProducto(nuevoProducto) { producto ->
-                        productos = productos + producto
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Agregar Producto")
+
+            Button(onClick = onTakePhoto) {
+                Text("Tomar Foto")
             }
 
-            // Lista de productos
-            Text("Lista de Productos", style = MaterialTheme.typography.titleMedium)
+            imagePath?.let {
+                Text("Imagen guardada en: $it", style = MaterialTheme.typography.bodyMedium)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Button(
+                    onClick = {
+                        val nombre = nombreProducto.text
+                        val precio = precioProducto.text.toDoubleOrNull() ?: 0.0
+
+                        if (editingProduct != null) {
+                            // Actualizar producto
+                            val productoActualizado = Producto(
+                                id = editingProduct!!.id,
+                                nombre = nombre,
+                                precio = precio,
+                                imagenUrl = imagePath ?: editingProduct!!.imagenUrl
+                            )
+
+                            RetrofitInstance.api.updateProducto(editingProduct!!.id, productoActualizado)
+                                .enqueue(object : Callback<Producto> {
+                                    override fun onResponse(call: Call<Producto>, response: Response<Producto>) {
+                                        if (response.isSuccessful) {
+                                            Toast.makeText(context, "Producto actualizado", Toast.LENGTH_SHORT).show()
+                                            // Actualizar lista de productos
+                                            RetrofitInstance.api.getProductos().enqueue(object : Callback<List<Producto>> {
+                                                override fun onResponse(call: Call<List<Producto>>, response: Response<List<Producto>>) {
+                                                    if (response.isSuccessful) {
+                                                        response.body()?.let { productos = it }
+                                                    }
+                                                }
+                                                override fun onFailure(call: Call<List<Producto>>, t: Throwable) {}
+                                            })
+                                            // Limpiar campos
+                                            nombreProducto = TextFieldValue("")
+                                            precioProducto = TextFieldValue("")
+                                            editingProduct = null
+                                        }
+                                    }
+                                    override fun onFailure(call: Call<Producto>, t: Throwable) {
+                                        Toast.makeText(context, "Error al actualizar: ${t.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                })
+                        } else {
+                            // Crear nuevo producto
+                            val nuevoProducto = Producto(id = 0, nombre = nombre, precio = precio, imagenUrl = imagePath)
+                            RetrofitInstance.api.createProducto(nuevoProducto).enqueue(object : Callback<Producto> {
+                                override fun onResponse(call: Call<Producto>, response: Response<Producto>) {
+                                    if (response.isSuccessful) {
+                                        Toast.makeText(context, "Producto guardado", Toast.LENGTH_SHORT).show()
+                                        // Actualizar lista
+                                        RetrofitInstance.api.getProductos().enqueue(object : Callback<List<Producto>> {
+                                            override fun onResponse(call: Call<List<Producto>>, response: Response<List<Producto>>) {
+                                                if (response.isSuccessful) {
+                                                    response.body()?.let { productos = it }
+                                                }
+                                            }
+                                            override fun onFailure(call: Call<List<Producto>>, t: Throwable) {}
+                                        })
+                                        // Limpiar campos
+                                        nombreProducto = TextFieldValue("")
+                                        precioProducto = TextFieldValue("")
+                                    }
+                                }
+                                override fun onFailure(call: Call<Producto>, t: Throwable) {
+                                    Toast.makeText(context, "Error al guardar: ${t.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            })
+                        }
+                    }
+                ) {
+                    Text(if (editingProduct == null) "Guardar Producto" else "Actualizar Producto")
+                }
+
+                if (editingProduct != null) {
+                    Button(
+                        onClick = {
+                            nombreProducto = TextFieldValue("")
+                            precioProducto = TextFieldValue("")
+                            editingProduct = null
+                        }
+                    ) {
+                        Text("Cancelar")
+                    }
+                }
+            }
+
             LazyColumn(
                 modifier = Modifier.fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(productos) { producto ->
-                    ProductoItem(
-                        producto = producto,
-                        onUpdate = { updatedProducto ->
-                            updateProducto(updatedProducto) {
-                                productos = productos.map {
-                                    if (it.id == updatedProducto.id) updatedProducto else it
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(text = "ID: ${producto.id}", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "Nombre: ${producto.nombre}", style = MaterialTheme.typography.bodyLarge)
+                            Text(text = "Precio: ${producto.precio}", style = MaterialTheme.typography.bodyMedium)
+                            producto.imagenUrl?.let {
+                                Text(text = "Imagen: $it")
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Button(
+                                    onClick = {
+                                        editingProduct = producto
+                                        nombreProducto = TextFieldValue(producto.nombre)
+                                        precioProducto = TextFieldValue(producto.precio.toString())
+                                    },
+                                    modifier = Modifier.padding(end = 8.dp)
+                                ) {
+                                    Text("Editar")
+                                }
+                                Button(
+                                    onClick = {
+                                        RetrofitInstance.api.deleteProducto(producto.id)
+                                            .enqueue(object : Callback<Void> {
+                                                override fun onResponse(call: Call<Void>, response: Response<Void>) {
+                                                    if (response.isSuccessful) {
+                                                        Toast.makeText(context, "Producto eliminado", Toast.LENGTH_SHORT).show()
+                                                        // Actualizar lista
+                                                        RetrofitInstance.api.getProductos().enqueue(object : Callback<List<Producto>> {
+                                                            override fun onResponse(call: Call<List<Producto>>, response: Response<List<Producto>>) {
+                                                                if (response.isSuccessful) {
+                                                                    response.body()?.let { productos = it }
+                                                                }
+                                                            }
+                                                            override fun onFailure(call: Call<List<Producto>>, t: Throwable) {}
+                                                        })
+                                                    }
+                                                }
+                                                override fun onFailure(call: Call<Void>, t: Throwable) {
+                                                    Toast.makeText(context, "Error al eliminar: ${t.message}", Toast.LENGTH_SHORT).show()
+                                                }
+                                            })
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                                ) {
+                                    Text("Eliminar")
                                 }
                             }
-                        },
-                        onDelete = {
-                            deleteProducto(it.id) {
-                                productos = productos.filter { prod -> prod.id != it.id }
-                            }
                         }
-                    )
+                    }
                 }
             }
         }
     }
 }
 
-// Función para obtener productos
-fun fetchProductos(onSuccess: (List<Producto>) -> Unit) {
-    val call = RetrofitInstance.api.getProductos()
-    call.enqueue(object : Callback<List<Producto>> {
-        override fun onResponse(call: Call<List<Producto>>, response: Response<List<Producto>>) {
-            if (response.isSuccessful) {
-                onSuccess(response.body() ?: emptyList())
-            } else {
-                Log.e("ProductScreen", "Error al obtener productos: ${response.code()}")
-            }
-        }
-
-        override fun onFailure(call: Call<List<Producto>>, t: Throwable) {
-            Log.e("ProductScreen", "Error de red: ${t.message}")
-        }
-    })
-}
-
-// Función para crear un producto
-fun createProducto(producto: Producto, onSuccess: (Producto) -> Unit) {
-    val call = RetrofitInstance.api.createProducto(producto)
-    call.enqueue(object : Callback<Producto> {
-        override fun onResponse(call: Call<Producto>, response: Response<Producto>) {
-            if (response.isSuccessful) {
-                response.body()?.let(onSuccess)
-            } else {
-                Log.e("ProductScreen", "Error al crear producto: ${response.code()}")
-            }
-        }
-
-        override fun onFailure(call: Call<Producto>, t: Throwable) {
-            Log.e("ProductScreen", "Error de red: ${t.message}")
-        }
-    })
-}
-
-// Función para actualizar un producto
-fun updateProducto(producto: Producto, onSuccess: () -> Unit) {
-    val call = RetrofitInstance.api.updateProducto(producto.id, producto)
-    call.enqueue(object : Callback<Producto> {
-        override fun onResponse(call: Call<Producto>, response: Response<Producto>) {
-            if (response.isSuccessful) {
-                onSuccess()
-            } else {
-                Log.e("ProductScreen", "Error al actualizar producto: ${response.code()}")
-            }
-        }
-
-        override fun onFailure(call: Call<Producto>, t: Throwable) {
-            Log.e("ProductScreen", "Error de red: ${t.message}")
-        }
-    })
-}
-
-// Función para eliminar un producto
-fun deleteProducto(id: Int, onSuccess: () -> Unit) {
-    val call = RetrofitInstance.api.deleteProducto(id)
-    call.enqueue(object : Callback<Void> {
-        override fun onResponse(call: Call<Void>, response: Response<Void>) {
-            if (response.isSuccessful) {
-                onSuccess()
-            } else {
-                Log.e("ProductScreen", "Error al eliminar producto: ${response.code()}")
-            }
-        }
-
-        override fun onFailure(call: Call<Void>, t: Throwable) {
-            Log.e("ProductScreen", "Error de red: ${t.message}")
-        }
-    })
-}
-
-// Composable para mostrar un producto con opciones de actualizar y eliminar
-@Composable
-fun ProductoItem(producto: Producto, onUpdate: (Producto) -> Unit, onDelete: (Producto) -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(8.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(text = "ID: ${producto.id}", style = MaterialTheme.typography.bodySmall)
-            Text(text = "Nombre: ${producto.nombre}", style = MaterialTheme.typography.bodyLarge)
-            Text(text = "Precio: ${producto.precio}", style = MaterialTheme.typography.bodyMedium)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Button(onClick = { onUpdate(producto.copy(nombre = "Actualizado")) }) {
-                    Text("Actualizar")
-                }
-                Button(onClick = { onDelete(producto) }) {
-                    Text("Eliminar")
-                }
-            }
-        }
-    }
-}
-
-// Barra superior personalizada
 @Composable
 fun CustomTopBar(title: String) {
     Row(
